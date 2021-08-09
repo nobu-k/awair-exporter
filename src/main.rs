@@ -1,3 +1,4 @@
+use prometheus::{self, Encoder, TextEncoder};
 use warp::Filter;
 
 #[tokio::main]
@@ -9,5 +10,10 @@ async fn main() {
 }
 
 fn metrics() -> String {
-    "test".to_owned()
+    let mut buffer = Vec::new();
+    let encoder = TextEncoder::new();
+    let metric_families = prometheus::gather();
+    encoder.encode(&metric_families, &mut buffer).unwrap(); // TODO: error handling
+
+    String::from_utf8(buffer).unwrap()
 }
