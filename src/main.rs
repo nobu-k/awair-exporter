@@ -1,13 +1,35 @@
+use clap::{AppSettings, Clap};
 use prometheus::{self, Encoder, TextEncoder};
 use std::convert::Infallible;
+use std::net::ToSocketAddrs;
 use warp::{Filter, Reply};
+
+const VERSION: &'static str = "0.1.0";
+
+#[derive(Clap)]
+#[clap(version = VERSION)]
+#[clap(setting = AppSettings::ColoredHelp)]
+struct Opts {
+    #[clap(short = 'L', long, default_value = "localhost:19101")]
+    listen_on: String,
+}
 
 #[tokio::main]
 async fn main() {
+    let opts = Opts::parse();
+    let addr = match opts.listen_on.to_socket_addrs() {
+        Ok(mut addr) => addr
+            .next()
+            .expect("no address information provided with --listen-on"),
+        Err(err) => {
+            panic!("parsing socket failed: {}", err);
+        }
+    };
+
     let metrics = warp::path!("metrics").and_then(metrics);
     let routes = warp::get().and(metrics);
 
-    warp::serve(routes).run(([127, 0, 0, 1], 3030)).await;
+    warp::serve(routes).run(addr).await;
 }
 
 async fn metrics() -> Result<impl Reply, Infallible> {
