@@ -2,6 +2,7 @@ use clap::{AppSettings, Clap};
 use prometheus::{self, Encoder, TextEncoder};
 use std::convert::Infallible;
 use std::net::ToSocketAddrs;
+use tracing::{error, info, instrument};
 use warp::{Filter, Reply};
 
 const VERSION: &'static str = "0.1.0";
@@ -16,6 +17,13 @@ struct Opts {
 
 #[tokio::main]
 async fn main() {
+    let collector = tracing_subscriber::fmt()
+        .json()
+        .with_timer(tracing_subscriber::fmt::time::ChronoUtc::rfc3339())
+        .finish();
+
+    tracing::subscriber::set_global_default(collector).expect("Failed to set up the logger");
+
     let opts = Opts::parse();
     let addr = match opts.listen_on.to_socket_addrs() {
         Ok(mut addr) => addr
@@ -27,16 +35,23 @@ async fn main() {
     };
 
     let metrics = warp::path!("metrics").and_then(metrics);
-    let routes = warp::get().and(metrics);
+    let routes = warp::get().and(metrics).with(warp::log::custom(|i| {
+        // TODO: due to the limitation of warp, request durations cannot be
+        // measured by warp.
+        info!(method = %i.method(), path = i.path(), status = i.status().as_u16(), "access");
+    }));
 
+    info!(%addr, "starting the server");
     warp::serve(routes).run(addr).await;
 }
 
+#[instrument]
 async fn metrics() -> Result<impl Reply, Infallible> {
     let mut buffer = Vec::new();
     let encoder = TextEncoder::new();
     let metric_families = prometheus::gather();
-    if encoder.encode(&metric_families, &mut buffer).is_err() {
+    if let Err(error) = encoder.encode(&metric_families, &mut buffer) {
+        error!(%error, "failed to encode metrics");
         return Ok(warp::http::Response::builder()
             .status(warp::http::StatusCode::INTERNAL_SERVER_ERROR)
             .body("Something went wrong".to_owned()));
