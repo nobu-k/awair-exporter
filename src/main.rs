@@ -9,6 +9,9 @@ use warp::{Filter, Reply};
 mod config;
 use config::Config;
 
+mod data;
+use data::Data;
+
 const VERSION: &'static str = "0.1.0";
 
 #[derive(Clap)]
@@ -72,8 +75,8 @@ async fn metrics(config: std::sync::Arc<Config>) -> Result<impl Reply, Infallibl
     for endpoint in &config.endpoints {
         match reqwest::get(&endpoint.url).await {
             Ok(res) => {
-                let body = res.text().await.unwrap();
-                info!("{}", body);
+                let body: Data = res.json().await.unwrap();
+                info!("{:?}", body);
             }
             Err(error) => {
                 error!(%error, url = %&endpoint.url, "failed to get raw data");
