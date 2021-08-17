@@ -1,3 +1,4 @@
+use anyhow::Context;
 use clap::{AppSettings, Clap};
 use prometheus::{self, Encoder, TextEncoder};
 use std::convert::Infallible;
@@ -5,34 +6,41 @@ use std::net::ToSocketAddrs;
 use tracing::{error, info, instrument};
 use warp::{Filter, Reply};
 
+mod config;
+use config::Config;
+
 const VERSION: &'static str = "0.1.0";
 
 #[derive(Clap)]
 #[clap(version = VERSION)]
 #[clap(setting = AppSettings::ColoredHelp)]
 struct Opts {
+    #[clap(short, long, default_value = "/etc/awair-exporter/config.yaml")]
+    config: String,
+
     #[clap(short = 'L', long, default_value = "localhost:19101")]
     listen_on: String,
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     let collector = tracing_subscriber::fmt()
         .json()
         .with_timer(tracing_subscriber::fmt::time::ChronoUtc::rfc3339())
         .finish();
 
-    tracing::subscriber::set_global_default(collector).expect("Failed to set up the logger");
+    tracing::subscriber::set_global_default(collector)
+        .with_context(|| "failed to set up the logger")?;
 
     let opts = Opts::parse();
-    let addr = match opts.listen_on.to_socket_addrs() {
-        Ok(mut addr) => addr
-            .next()
-            .expect("no address information provided with --listen-on"),
-        Err(err) => {
-            panic!("parsing socket failed: {}", err);
-        }
-    };
+    let config = load_config(&opts.config)?;
+
+    let addr = opts
+        .listen_on
+        .to_socket_addrs()
+        .with_context(|| "parsing --listen-on failed")?
+        .next()
+        .with_context(|| "no address information provided with --listen-on")?;
 
     let metrics = warp::path!("metrics").and_then(metrics);
     let routes = warp::get().and(metrics).with(warp::log::custom(|i| {
@@ -43,6 +51,7 @@ async fn main() {
 
     info!(%addr, "starting the server");
     warp::serve(routes).run(addr).await;
+    Ok(())
 }
 
 #[instrument]
@@ -60,4 +69,12 @@ async fn metrics() -> Result<impl Reply, Infallible> {
     Ok(warp::http::Response::builder()
         .header("Content-Type", "text/plain; version=0.0.4")
         .body(String::from_utf8(buffer).unwrap()))
+}
+
+fn load_config(path: &str) -> anyhow::Result<Config> {
+    let f =
+        std::fs::File::open(path).with_context(|| format!("failed to open the file: {}", path))?;
+    let c = serde_yaml::from_reader(f)
+        .with_context(|| format!("failed to read the config file {}", path))?;
+    Ok(c)
 }
