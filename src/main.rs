@@ -34,6 +34,7 @@ async fn main() -> anyhow::Result<()> {
 
     let opts = Opts::parse();
     let config = load_config(&opts.config)?;
+    let config = std::sync::Arc::new(config);
 
     let addr = opts
         .listen_on
@@ -42,7 +43,7 @@ async fn main() -> anyhow::Result<()> {
         .next()
         .with_context(|| "no address information provided with --listen-on")?;
 
-    let metrics = warp::path!("metrics").and_then(metrics);
+    let metrics = warp::path!("metrics").and_then(move || metrics(config.clone()));
     let routes = warp::get().and(metrics).with(warp::log::custom(|i| {
         // TODO: due to the limitation of warp, request durations cannot be
         // measured by warp.
@@ -55,7 +56,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 #[instrument]
-async fn metrics() -> Result<impl Reply, Infallible> {
+async fn metrics(config: std::sync::Arc<Config>) -> Result<impl Reply, Infallible> {
     let mut buffer = Vec::new();
     let encoder = TextEncoder::new();
     let metric_families = prometheus::gather();
@@ -64,6 +65,20 @@ async fn metrics() -> Result<impl Reply, Infallible> {
         return Ok(warp::http::Response::builder()
             .status(warp::http::StatusCode::INTERNAL_SERVER_ERROR)
             .body("Something went wrong".to_owned()));
+    }
+
+    // TODO: concurrent request
+    let config = config.as_ref();
+    for endpoint in &config.endpoints {
+        match reqwest::get(&endpoint.url).await {
+            Ok(res) => {
+                let body = res.text().await.unwrap();
+                info!("{}", body);
+            }
+            Err(error) => {
+                error!(%error, url = %&endpoint.url, "failed to get raw data");
+            }
+        }
     }
 
     Ok(warp::http::Response::builder()

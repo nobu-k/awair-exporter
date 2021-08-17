@@ -2,13 +2,13 @@ use serde::Deserialize;
 
 #[derive(Deserialize, Debug)]
 pub struct Config {
-    endpoints: Vec<Endpoint>,
+    pub endpoints: Vec<Endpoint>,
 }
 
 #[derive(Deserialize, Debug)]
 pub struct Endpoint {
-    name: String,
-    url: String,
+    pub name: String,
+    pub url: String,
 }
 
 // TODO: better error reporting
