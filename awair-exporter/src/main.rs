@@ -8,6 +8,9 @@ use warp::Filter;
 mod config;
 use config::Config;
 
+mod log_level;
+use log_level::LogLevel;
+
 mod data;
 mod endpoints;
 mod metrics;
@@ -23,19 +26,24 @@ struct Opts {
 
     #[clap(short = 'L', long, default_value = "localhost:19101")]
     listen_on: String,
+
+    #[clap(long, default_value = "info")]
+    log_level: LogLevel,
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let opts = Opts::parse();
+
     let collector = tracing_subscriber::fmt()
         .json()
         .with_timer(tracing_subscriber::fmt::time::ChronoUtc::rfc3339())
+        .with_max_level(opts.log_level.level())
         .finish();
 
     tracing::subscriber::set_global_default(collector)
         .with_context(|| "failed to set up the logger")?;
 
-    let opts = Opts::parse();
     let config = load_config(&opts.config)?;
     let ctx = endpoints::metrics::MetricsContext::new(config)?;
 

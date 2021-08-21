@@ -22,7 +22,7 @@ impl MetricsContext {
     }
 }
 
-#[instrument]
+#[instrument(skip(ctx))]
 pub async fn metrics(ctx: std::sync::Arc<MetricsContext>) -> Result<impl Reply, Infallible> {
     let mut buffer = Vec::new();
     let encoder = TextEncoder::new();
