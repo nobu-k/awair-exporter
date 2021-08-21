@@ -1,19 +1,16 @@
 use anyhow::Context;
 use clap::{AppSettings, Clap};
-use prometheus::{self, Encoder, TextEncoder};
-use std::convert::Infallible;
+
 use std::net::ToSocketAddrs;
-use tracing::{error, info, instrument};
-use warp::{Filter, Reply};
+use tracing::info;
+use warp::Filter;
 
 mod config;
 use config::Config;
 
 mod data;
-use data::Data;
-
+mod endpoints;
 mod metrics;
-use metrics::Registry;
 
 const VERSION: &'static str = "0.1.0";
 
@@ -28,12 +25,6 @@ struct Opts {
     listen_on: String,
 }
 
-#[derive(Debug)]
-struct MetricsContext {
-    config: Config,
-    registry: Registry,
-}
-
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let collector = tracing_subscriber::fmt()
@@ -46,10 +37,7 @@ async fn main() -> anyhow::Result<()> {
 
     let opts = Opts::parse();
     let config = load_config(&opts.config)?;
-    let ctx = std::sync::Arc::new(MetricsContext {
-        config,
-        registry: Registry::new(prometheus::Opts::new("", ""))?,
-    });
+    let ctx = endpoints::metrics::MetricsContext::new(config)?;
 
     let addr = opts
         .listen_on
@@ -58,7 +46,7 @@ async fn main() -> anyhow::Result<()> {
         .next()
         .with_context(|| "no address information provided with --listen-on")?;
 
-    let metrics = warp::path!("metrics").and_then(move || metrics(ctx.clone()));
+    let metrics = warp::path!("metrics").and_then(move || endpoints::metrics::metrics(ctx.clone()));
     let routes = warp::get().and(metrics).with(warp::log::custom(|i| {
         // TODO: due to the limitation of warp, request durations cannot be
         // measured by warp.
@@ -68,43 +56,6 @@ async fn main() -> anyhow::Result<()> {
     info!(%addr, "starting the server");
     warp::serve(routes).run(addr).await;
     Ok(())
-}
-
-#[instrument]
-async fn metrics(ctx: std::sync::Arc<MetricsContext>) -> Result<impl Reply, Infallible> {
-    let mut buffer = Vec::new();
-    let encoder = TextEncoder::new();
-    let metric_families = prometheus::gather();
-    if let Err(error) = encoder.encode(&metric_families, &mut buffer) {
-        error!(%error, "failed to encode metrics");
-        return Ok(warp::http::Response::builder()
-            .status(warp::http::StatusCode::INTERNAL_SERVER_ERROR)
-            .body("Something went wrong".to_owned()));
-    }
-
-    // TODO: concurrent request
-    let ctx = ctx.as_ref();
-    for endpoint in &ctx.config.endpoints {
-        match reqwest::get(&endpoint.url).await {
-            Ok(res) => {
-                let body: Data = res.json().await.unwrap(); // TODO: error handling
-                ctx.registry.scrape(&endpoint.name, &body);
-            }
-            Err(error) => {
-                error!(%error, url = %&endpoint.url, "failed to get raw data");
-            }
-        }
-    }
-    if let Err(error) = encoder.encode(&ctx.registry.gather(), &mut buffer) {
-        error!(%error, "failed to encode awair metrics");
-        return Ok(warp::http::Response::builder()
-            .status(warp::http::StatusCode::INTERNAL_SERVER_ERROR)
-            .body("Something went wrong".to_owned()));
-    }
-
-    Ok(warp::http::Response::builder()
-        .header("Content-Type", "text/plain; version=0.0.4")
-        .body(String::from_utf8(buffer).unwrap()))
 }
 
 fn load_config(path: &str) -> anyhow::Result<Config> {
