@@ -12,6 +12,9 @@ use config::Config;
 mod data;
 use data::Data;
 
+mod metrics;
+use metrics::Registry;
+
 const VERSION: &'static str = "0.1.0";
 
 #[derive(Clap)]
@@ -23,6 +26,12 @@ struct Opts {
 
     #[clap(short = 'L', long, default_value = "localhost:19101")]
     listen_on: String,
+}
+
+#[derive(Debug)]
+struct MetricsContext {
+    config: Config,
+    registry: Registry,
 }
 
 #[tokio::main]
@@ -37,7 +46,10 @@ async fn main() -> anyhow::Result<()> {
 
     let opts = Opts::parse();
     let config = load_config(&opts.config)?;
-    let config = std::sync::Arc::new(config);
+    let ctx = std::sync::Arc::new(MetricsContext {
+        config,
+        registry: Registry::new(prometheus::Opts::new("", ""))?,
+    });
 
     let addr = opts
         .listen_on
@@ -46,7 +58,7 @@ async fn main() -> anyhow::Result<()> {
         .next()
         .with_context(|| "no address information provided with --listen-on")?;
 
-    let metrics = warp::path!("metrics").and_then(move || metrics(config.clone()));
+    let metrics = warp::path!("metrics").and_then(move || metrics(ctx.clone()));
     let routes = warp::get().and(metrics).with(warp::log::custom(|i| {
         // TODO: due to the limitation of warp, request durations cannot be
         // measured by warp.
@@ -59,7 +71,7 @@ async fn main() -> anyhow::Result<()> {
 }
 
 #[instrument]
-async fn metrics(config: std::sync::Arc<Config>) -> Result<impl Reply, Infallible> {
+async fn metrics(ctx: std::sync::Arc<MetricsContext>) -> Result<impl Reply, Infallible> {
     let mut buffer = Vec::new();
     let encoder = TextEncoder::new();
     let metric_families = prometheus::gather();
@@ -71,17 +83,23 @@ async fn metrics(config: std::sync::Arc<Config>) -> Result<impl Reply, Infallibl
     }
 
     // TODO: concurrent request
-    let config = config.as_ref();
-    for endpoint in &config.endpoints {
+    let ctx = ctx.as_ref();
+    for endpoint in &ctx.config.endpoints {
         match reqwest::get(&endpoint.url).await {
             Ok(res) => {
-                let body: Data = res.json().await.unwrap();
-                info!("{:?}", body);
+                let body: Data = res.json().await.unwrap(); // TODO: error handling
+                ctx.registry.scrape(&endpoint.name, &body);
             }
             Err(error) => {
                 error!(%error, url = %&endpoint.url, "failed to get raw data");
             }
         }
+    }
+    if let Err(error) = encoder.encode(&ctx.registry.gather(), &mut buffer) {
+        error!(%error, "failed to encode awair metrics");
+        return Ok(warp::http::Response::builder()
+            .status(warp::http::StatusCode::INTERNAL_SERVER_ERROR)
+            .body("Something went wrong".to_owned()));
     }
 
     Ok(warp::http::Response::builder()

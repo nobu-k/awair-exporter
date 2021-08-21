@@ -23,5 +23,3 @@ pub struct Data {
 
     pub pm10_est: f64,
 }
-
-// TODO: add method to register prometheus metrics
