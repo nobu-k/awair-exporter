@@ -1,0 +1,41 @@
+load("@rules_rust//rust:rust.bzl", "rust_binary")
+load("//cargo:crates.bzl", "all_crate_deps")
+load("@io_bazel_rules_docker//container:container.bzl", "container_image", "container_push")
+
+rust_binary(
+    name = "awair-exporter",
+    srcs = glob([
+        "src/**/*.rs",
+    ]),
+    deps = all_crate_deps(),
+    # TODO: embed version
+)
+
+# TODO: test
+
+container_image(
+    name = "image",
+    base = "@rust_base_image//image",
+    directory = "/usr/bin/",
+    entrypoint = ["/usr/bin/awair-exporter"],
+    files = [":awair-exporter"],
+    visibility = ["//visibility:public"],
+)
+
+container_push(
+    name = "push",
+    format = "Docker",
+    image = ":image",
+    registry = "index.docker.io",
+    repository = "nobu/awair-exporter",
+    tag = "latest",
+)
+
+container_push(
+    name = "push-version",
+    format = "Docker",
+    image = ":image",
+    registry = "index.docker.io",
+    repository = "nobu/awair-exporter",
+    tag = "0.1.0",  # TODO: use stamp
+)
