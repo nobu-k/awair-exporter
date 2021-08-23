@@ -1,3 +1,4 @@
+use futures::{stream, StreamExt};
 use prometheus::{self, Encoder, TextEncoder};
 use std::convert::Infallible;
 use tracing::{error, instrument};
@@ -11,6 +12,7 @@ use crate::metrics::Registry;
 pub struct MetricsContext {
     config: Config,
     registry: Registry,
+    client: reqwest::Client,
 }
 
 impl MetricsContext {
@@ -18,6 +20,7 @@ impl MetricsContext {
         Ok(std::sync::Arc::new(MetricsContext {
             config,
             registry: Registry::new(prometheus::Opts::new("", ""))?,
+            client: reqwest::Client::new(),
         }))
     }
 }
@@ -34,19 +37,34 @@ pub async fn metrics(ctx: std::sync::Arc<MetricsContext>) -> Result<impl Reply, 
             .body("Something went wrong".to_owned()));
     }
 
-    // TODO: concurrent request
     let ctx = ctx.as_ref();
-    for endpoint in &ctx.config.endpoints {
-        match reqwest::get(&endpoint.url).await {
-            Ok(res) => {
-                let body: Data = res.json().await.unwrap(); // TODO: error handling
-                ctx.registry.scrape(&endpoint.name, &body);
+    stream::iter(ctx.config.endpoints.clone())
+        .map(|endpoint| async move {
+            match ctx.client.get(&endpoint.url).send().await {
+                Ok(res) => match res.json::<Data>().await {
+                    Ok(data) => Ok((endpoint.name, data)),
+                    Err(error) => {
+                        error!(%error, url = %&endpoint.url, "failed to unmarshal raw data JSON");
+                        ctx.registry.failed(&endpoint.name);
+                        Err(error)
+                    }
+                },
+                Err(error) => {
+                    error!(%error, url = %&endpoint.url, "failed to get raw data");
+                    ctx.registry.failed(&endpoint.name);
+                    Err(error)
+                }
             }
-            Err(error) => {
-                error!(%error, url = %&endpoint.url, "failed to get raw data");
+        })
+        .buffer_unordered(4) // TODO: customizable
+        .for_each(|b| async {
+            match b {
+                Ok((name, body)) => ctx.registry.scrape(&name, &body),
+                _ => {}
             }
-        }
-    }
+        })
+        .await;
+
     if let Err(error) = encoder.encode(&ctx.registry.gather(), &mut buffer) {
         error!(%error, "failed to encode awair metrics");
         return Ok(warp::http::Response::builder()

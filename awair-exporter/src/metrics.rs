@@ -18,6 +18,10 @@ impl Registry {
         self.m.scrape(instance, data);
     }
 
+    pub fn failed(&self, instance: &str) {
+        self.m.failed(instance);
+    }
+
     pub fn gather(&self) -> Vec<MetricFamily> {
         self.r.gather()
     }
@@ -40,6 +44,7 @@ struct Metrics {
     pm25: GaugeVec,
     pm10_est: GaugeVec,
     scraped: CounterVec,
+    failed: CounterVec,
 }
 
 impl Metrics {
@@ -60,6 +65,7 @@ impl Metrics {
             pm25: gauge(r, &opts, "awair_pm25", "Particulate matter less than 2.5 microns in diameter (µg/m^3)")?,
             pm10_est: gauge(r, &opts, "awair_pm25_est", "Estimated particulate matter less than 10 microns in diameter (µg/m^3 - calculated by the PM2.5 sensor)")?,
             scraped: counter(r, &opts, "awair_scraped_total", "The number of times the Awair has been scraped so far")?,
+            failed: counter(r, &opts, "awair_scrape_failed_total", "The number of times requests to Awair failed so far")?,
         })
     }
 
@@ -92,6 +98,10 @@ impl Metrics {
         self.pm25.with_label_values(&labels).set(data.pm25);
         self.pm10_est.with_label_values(&labels).set(data.pm10_est);
         self.scraped.with_label_values(&labels).inc();
+    }
+
+    fn failed(&self, instance: &str) {
+        self.failed.with_label_values(&[instance]).inc();
     }
 }
 
