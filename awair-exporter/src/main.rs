@@ -37,6 +37,7 @@ async fn main() -> anyhow::Result<()> {
 
     let collector = tracing_subscriber::fmt()
         .json()
+        .flatten_event(true)
         .with_timer(tracing_subscriber::fmt::time::ChronoUtc::rfc3339())
         .with_max_level(opts.log_level.level())
         .finish();
